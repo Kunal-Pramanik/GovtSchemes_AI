@@ -105,9 +105,9 @@ https://scheme-copilot-api.onrender.com/chat
 Build a simple chat interface.
 
 Framework:
-
+```
 Next.js
-
+```
 UI layout:
 ```
 --------------------------------
