@@ -1,16 +1,21 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 import faiss
 import numpy as np
 import json
 import os
+
 from sentence_transformers import SentenceTransformer
-from huggingface_hub import InferenceClient
+from huggingface_hub import InferenceClient, hf_hub_download
 
-app = FastAPI(title="myScheme Copilot API")
+# ---------------------------------------
+# FastAPI App
+# ---------------------------------------
 
-# Add CORS so Frontend can communicate
+app = FastAPI(title="GovtScheme_AI")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,86 +24,183 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------
+# Environment variables
+# ---------------------------------------
+
 HF_TOKEN = os.environ.get("HF_TOKEN")
+
 if not HF_TOKEN:
-    print("WARNING: HF_TOKEN environment variable not set. LLM features will fail.")
+    print("WARNING: HF_TOKEN not set. LLM inference will fail.")
 
-print("Loading Embedding Model...")
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+# ---------------------------------------
+# Load embedding model
+# ---------------------------------------
 
-print("Loading FAISS DB...")
-db_path = os.environ.get("FAISS_INDEX_PATH", "schemes.index")
-meta_path = os.environ.get("FAISS_META_PATH", "schemes_meta.json")
+print("Loading embedding model...")
 
-# In production (Render) these files will be packaged with the backend
-if os.path.exists(db_path):
-    index = faiss.read_index(db_path)
-else:
-    print(f"Index not found at {db_path}. RAG will fail.")
+embedding_model = SentenceTransformer(
+    "sentence-transformers/all-MiniLM-L6-v2"
+)
 
-if os.path.exists(meta_path):
-    with open(meta_path, 'r', encoding='utf-8') as f:
-        meta_data = json.load(f)
-else:
-    print(f"Meta data not found at {meta_path}. RAG will fail.")
+print("Embedding model loaded.")
 
-# Hugging Face LLM - Using Mistral
-# We can use mistralai/Mistral-7B-Instruct-v0.2 or meta-llama/Meta-Llama-3-8B-Instruct
+# ---------------------------------------
+# Download FAISS index from Hugging Face
+# ---------------------------------------
+
+print("Downloading vector database from Hugging Face...")
+
+try:
+    index_path = hf_hub_download(
+        repo_id="pramanikkunal65/GovtScheme_AI",
+        filename="schemes.index",
+        repo_type="dataset"
+    )
+
+    meta_path = hf_hub_download(
+        repo_id="pramanikkunal65/GovtScheme_AI",
+        filename="schemes_meta.json",
+        repo_type="dataset"
+    )
+
+except Exception as e:
+    print("Failed to download FAISS data:", e)
+    raise
+
+# ---------------------------------------
+# Load FAISS index
+# ---------------------------------------
+
+print("Loading FAISS index...")
+
+index = faiss.read_index(index_path)
+
+with open(meta_path, "r", encoding="utf-8") as f:
+    meta_data = json.load(f)
+
+print(f"FAISS index loaded with {index.ntotal} vectors")
+
+# ---------------------------------------
+# Hugging Face LLM client
+# ---------------------------------------
+
 llm_client = InferenceClient(
     model="mistralai/Mistral-7B-Instruct-v0.2",
     token=HF_TOKEN
 )
 
+# ---------------------------------------
+# Request schema
+# ---------------------------------------
+
 class ChatRequest(BaseModel):
     query: str
 
+# ---------------------------------------
+# Health check
+# ---------------------------------------
+
 @app.get("/")
 def health_check():
-    return {"status": "healthy", "service": "myscheme-copilot"}
+    return {
+        "status": "healthy",
+        "service": "myscheme-copilot"
+    }
+
+# ---------------------------------------
+# Chat endpoint
+# ---------------------------------------
 
 @app.post("/chat")
 def chat(request: ChatRequest):
-    query = request.query
+
+    query = request.query.strip()
+
     if not query:
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-        
+        raise HTTPException(
+            status_code=400,
+            detail="Query cannot be empty"
+        )
+
     try:
-        # 1. Embed query
-        query_vector = embedding_model.encode([query]).astype('float32')
-        
-        # 2. Vector Search (Top 3)
+
+        # -----------------------------------
+        # Step 1: Create embedding
+        # -----------------------------------
+
+        query_vector = embedding_model.encode([query]).astype("float32")
+
+        # -----------------------------------
+        # Step 2: Vector search
+        # -----------------------------------
+
         k = 3
+
         distances, indices = index.search(query_vector, k)
-        
+
         retrieved_contexts = []
+
         for idx in indices[0]:
             if idx < len(meta_data):
-                retrieved_contexts.append(meta_data[idx]['text'])
-                
-        # 3. Assemble Prompt
-        context_block = "\n\n---\n\n".join(retrieved_contexts)
-        prompt = f"""<s>[INST] You are a highly helpful and expert AI assistant for Indian Government schemes (myScheme).
-Use the provided retrieved context about government schemes to answer the user's question accurately.
-If the answer is not contained in the context, politely inform the user that you don't have the specific details.
-Provide completely readable, structured responses with bullets where necessary. 
+                retrieved_contexts.append(meta_data[idx]["text"])
 
-### Context (Relevant Schemes):
+        # -----------------------------------
+        # Step 3: Build prompt
+        # -----------------------------------
+
+        context_block = "\n\n---\n\n".join(retrieved_contexts)
+
+        prompt = f"""
+<s>[INST]
+You are a highly helpful AI assistant for Indian Government welfare schemes.
+
+Use the provided context to answer the user's question accurately.
+
+If the answer is not available in the context, politely say that the information is not available.
+
+Provide clear, readable responses with bullet points when appropriate.
+
+### Context
 {context_block}
 
-### Question:
+### Question
 {query}
-[/INST]"""
+[/INST]
+"""
 
-        # 4. Infer via Hugging Face API
+        # -----------------------------------
+        # Step 4: LLM inference
+        # -----------------------------------
+
         if not HF_TOKEN:
-            return {"answer": "Error: HF_TOKEN is not configured for the backend.", "sources": retrieved_contexts}
-            
-        response = llm_client.text_generation(prompt, max_new_tokens=500, temperature=0.3, return_full_text=False)
-        
+            return {
+                "answer": "HF_TOKEN not configured on backend.",
+                "sources": retrieved_contexts
+            }
+
+        response = llm_client.text_generation(
+            prompt,
+            max_new_tokens=400,
+            temperature=0.3,
+            return_full_text=False
+        )
+
+        # -----------------------------------
+        # Step 5: Return response
+        # -----------------------------------
+
         return {
             "answer": response.strip(),
-            "sources": [meta_data[i]['name'] for i in indices[0] if i < len(meta_data)]
+            "sources": [
+                meta_data[i]["name"]
+                for i in indices[0]
+                if i < len(meta_data)
+            ]
         }
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
