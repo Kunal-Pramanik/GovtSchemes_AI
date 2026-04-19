@@ -2,6 +2,5 @@ fastapi
 uvicorn
 pydantic
 faiss-cpu
-sentence-transformers
 huggingface-hub
 numpy
