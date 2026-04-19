@@ -44,12 +44,11 @@ embedding_client = InferenceClient(
 )
 
 llm_client = InferenceClient(
-    model="mistralai/Mistral-7B-Instruct-v0.2",
+    model="HuggingFaceH4/zephyr-7b-beta",
     token=HF_TOKEN
 )
 
 print("HF clients initialized.")
-
 # ---------------------------------------------------
 # Download FAISS database
 # ---------------------------------------------------
