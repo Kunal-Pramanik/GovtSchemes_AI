@@ -7,12 +7,11 @@ import numpy as np
 import json
 import os
 
-
 from huggingface_hub import InferenceClient, hf_hub_download
 
-# ---------------------------------------
+# ---------------------------------------------------
 # FastAPI App
-# ---------------------------------------
+# ---------------------------------------------------
 
 app = FastAPI(title="GovtScheme_AI")
 
@@ -24,35 +23,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------
+# ---------------------------------------------------
 # Environment variables
-# ---------------------------------------
+# ---------------------------------------------------
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 if not HF_TOKEN:
-    print("WARNING: HF_TOKEN not set. LLM inference will fail.")
+    print("WARNING: HF_TOKEN not set. LLM and embeddings may fail.")
 
-# ---------------------------------------
-# Load embedding model
-# ---------------------------------------
+# ---------------------------------------------------
+# Hugging Face Clients
+# ---------------------------------------------------
 
-print("Loading embedding model...")
+print("Initializing Hugging Face clients...")
 
 embedding_client = InferenceClient(
     model="sentence-transformers/all-MiniLM-L6-v2",
     token=HF_TOKEN
 )
 
-print("Embedding model loaded.")
+llm_client = InferenceClient(
+    model="mistralai/Mistral-7B-Instruct-v0.2",
+    token=HF_TOKEN
+)
 
-# ---------------------------------------
-# Download FAISS index from Hugging Face
-# ---------------------------------------
+print("HF clients initialized.")
 
-print("Downloading vector database from Hugging Face...")
+# ---------------------------------------------------
+# Download FAISS database
+# ---------------------------------------------------
+
+print("Downloading FAISS vector database...")
 
 try:
+
     index_path = hf_hub_download(
         repo_id="pramanikkunal65/GovtScheme_AI",
         filename="schemes.index",
@@ -66,12 +71,12 @@ try:
     )
 
 except Exception as e:
-    print("Failed to download FAISS data:", e)
+    print("FAISS download failed:", str(e))
     raise
 
-# ---------------------------------------
-# Load FAISS index
-# ---------------------------------------
+# ---------------------------------------------------
+# Load FAISS
+# ---------------------------------------------------
 
 print("Loading FAISS index...")
 
@@ -82,36 +87,29 @@ with open(meta_path, "r", encoding="utf-8") as f:
 
 print(f"FAISS index loaded with {index.ntotal} vectors")
 
-# ---------------------------------------
-# Hugging Face LLM client
-# ---------------------------------------
-
-llm_client = InferenceClient(
-    model="mistralai/Mistral-7B-Instruct-v0.2",
-    token=HF_TOKEN
-)
-
-# ---------------------------------------
+# ---------------------------------------------------
 # Request schema
-# ---------------------------------------
+# ---------------------------------------------------
 
 class ChatRequest(BaseModel):
     query: str
 
-# ---------------------------------------
-# Health check
-# ---------------------------------------
+# ---------------------------------------------------
+# Health Check
+# ---------------------------------------------------
 
 @app.get("/")
 def health_check():
+
     return {
         "status": "healthy",
-        "service": "myscheme-copilot"
+        "service": "GovtScheme_AI",
+        "vectors_loaded": index.ntotal
     }
 
-# ---------------------------------------
-# Chat endpoint
-# ---------------------------------------
+# ---------------------------------------------------
+# Chat Endpoint
+# ---------------------------------------------------
 
 @app.post("/chat")
 def chat(request: ChatRequest):
@@ -126,41 +124,56 @@ def chat(request: ChatRequest):
 
     try:
 
-        # -----------------------------------
-        # Step 1: Create embedding
-        # -----------------------------------
+        # ---------------------------------------------------
+        # Step 1: Generate embedding using HF API
+        # ---------------------------------------------------
 
-        query_vector = np.array(embedding_client.feature_extraction(query),dtype="float32").reshape(1, -1)
+        query_vector = np.array(
+            embedding_client.feature_extraction(query),
+            dtype="float32"
+        ).reshape(1, -1)
 
-        # -----------------------------------
-        # Step 2: Vector search
-        # -----------------------------------
+        # ---------------------------------------------------
+        # Step 2: FAISS search
+        # ---------------------------------------------------
 
         k = 3
 
         distances, indices = index.search(query_vector, k)
 
         retrieved_contexts = []
+        retrieved_ids = []
 
         for idx in indices[0]:
-            if idx < len(meta_data):
-                retrieved_contexts.append(meta_data[idx]["text"])
 
-        # -----------------------------------
-        # Step 3: Build prompt
-        # -----------------------------------
+            if idx != -1 and idx < len(meta_data):
+
+                retrieved_contexts.append(meta_data[idx]["text"])
+                retrieved_ids.append(idx)
+
+        # ---------------------------------------------------
+        # Step 3: Prepare context
+        # ---------------------------------------------------
 
         context_block = "\n\n---\n\n".join(retrieved_contexts)
 
+        if not context_block:
+            context_block = "No relevant scheme information found."
+
+        # ---------------------------------------------------
+        # Step 4: Prompt
+        # ---------------------------------------------------
+
         prompt = f"""
 <s>[INST]
-You are a highly helpful AI assistant for Indian Government welfare schemes.
+You are an expert AI assistant for Indian Government welfare schemes.
 
-Use the provided context to answer the user's question accurately.
+Use the provided scheme context to answer the question accurately.
 
-If the answer is not available in the context, politely say that the information is not available.
+If the answer is not available in the context,
+politely inform the user that the information is unavailable.
 
-Provide clear, readable responses with bullet points when appropriate.
+Provide structured responses using bullet points when helpful.
 
 ### Context
 {context_block}
@@ -170,11 +183,12 @@ Provide clear, readable responses with bullet points when appropriate.
 [/INST]
 """
 
-        # -----------------------------------
-        # Step 4: LLM inference
-        # -----------------------------------
+        # ---------------------------------------------------
+        # Step 5: LLM inference
+        # ---------------------------------------------------
 
         if not HF_TOKEN:
+
             return {
                 "answer": "HF_TOKEN not configured on backend.",
                 "sources": retrieved_contexts
@@ -184,23 +198,32 @@ Provide clear, readable responses with bullet points when appropriate.
             prompt,
             max_new_tokens=400,
             temperature=0.3,
-            return_full_text=False
+            return_full_text=False,
+            timeout=60
         )
 
-        # -----------------------------------
-        # Step 5: Return response
-        # -----------------------------------
+        # ---------------------------------------------------
+        # Step 6: Return answer
+        # ---------------------------------------------------
 
         return {
+
             "answer": response.strip(),
+
             "sources": [
-                meta_data[i]["name"]
-                for i in indices[0]
-                if i < len(meta_data)
+
+                {
+                    "scheme": meta_data[i]["name"],
+                    "snippet": meta_data[i]["text"][:200]
+                }
+
+                for i in retrieved_ids
             ]
+
         }
 
     except Exception as e:
+
         raise HTTPException(
             status_code=500,
             detail=str(e)
