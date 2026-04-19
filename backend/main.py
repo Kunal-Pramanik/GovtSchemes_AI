@@ -194,13 +194,15 @@ Provide structured responses using bullet points when helpful.
                 "sources": retrieved_contexts
             }
 
-        response = llm_client.text_generation(
-            prompt,
-            max_new_tokens=400,
-            temperature=0.3,
-            return_full_text=False,
-            
+        response = llm_client.chat_completion(
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=400,
+            temperature=0.3
         )
+        
+        response_text = response.choices[0].message.content
 
         # ---------------------------------------------------
         # Step 6: Return answer
