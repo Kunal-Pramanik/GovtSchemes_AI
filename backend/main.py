@@ -199,7 +199,7 @@ Provide structured responses using bullet points when helpful.
             max_new_tokens=400,
             temperature=0.3,
             return_full_text=False,
-            timeout=60
+            
         )
 
         # ---------------------------------------------------
