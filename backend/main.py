@@ -139,22 +139,19 @@ def chat(request: ChatRequest):
 
         # Step 4 — Prompt
         prompt = f"""
-<s>[INST]
 You are an expert AI assistant for Indian Government welfare schemes.
 
-Use the provided scheme context to answer the question accurately.
+Answer the user's question using ONLY the provided scheme information.
 
-If the answer is not available in the context,
-politely inform the user that the information is unavailable.
+If the information is not available, say that clearly.
 
-Provide structured responses using bullet points when helpful.
+Provide clean, readable answers with bullet points.
 
-### Context
+SCHEME DATA:
 {context_block}
 
-### Question
+USER QUESTION:
 {query}
-[/INST]
 """
 
         # Step 5 — LLM Inference
