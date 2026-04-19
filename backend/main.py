@@ -56,23 +56,17 @@ print("HF clients initialized.")
 
 print("Downloading FAISS vector database...")
 
-try:
+index_path = hf_hub_download(
+    repo_id="pramanikkunal65/GovtScheme_AI",
+    filename="schemes.index",
+    repo_type="dataset"
+)
 
-    index_path = hf_hub_download(
-        repo_id="pramanikkunal65/GovtScheme_AI",
-        filename="schemes.index",
-        repo_type="dataset"
-    )
-
-    meta_path = hf_hub_download(
-        repo_id="pramanikkunal65/GovtScheme_AI",
-        filename="schemes_meta.json",
-        repo_type="dataset"
-    )
-
-except Exception as e:
-    print("FAISS download failed:", str(e))
-    raise
+meta_path = hf_hub_download(
+    repo_id="pramanikkunal65/GovtScheme_AI",
+    filename="schemes_meta.json",
+    repo_type="dataset"
+)
 
 # ---------------------------------------------------
 # Load FAISS
@@ -100,7 +94,6 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def health_check():
-
     return {
         "status": "healthy",
         "service": "GovtScheme_AI",
@@ -117,53 +110,35 @@ def chat(request: ChatRequest):
     query = request.query.strip()
 
     if not query:
-        raise HTTPException(
-            status_code=400,
-            detail="Query cannot be empty"
-        )
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
 
     try:
 
-        # ---------------------------------------------------
-        # Step 1: Generate embedding using HF API
-        # ---------------------------------------------------
-
+        # Step 1 — Embedding
         query_vector = np.array(
             embedding_client.feature_extraction(query),
             dtype="float32"
         ).reshape(1, -1)
 
-        # ---------------------------------------------------
-        # Step 2: FAISS search
-        # ---------------------------------------------------
-
+        # Step 2 — Vector Search
         k = 3
-
         distances, indices = index.search(query_vector, k)
 
         retrieved_contexts = []
         retrieved_ids = []
 
         for idx in indices[0]:
-
             if idx != -1 and idx < len(meta_data):
-
                 retrieved_contexts.append(meta_data[idx]["text"])
                 retrieved_ids.append(idx)
 
-        # ---------------------------------------------------
-        # Step 3: Prepare context
-        # ---------------------------------------------------
-
+        # Step 3 — Prepare Context
         context_block = "\n\n---\n\n".join(retrieved_contexts)
 
         if not context_block:
             context_block = "No relevant scheme information found."
 
-        # ---------------------------------------------------
-        # Step 4: Prompt
-        # ---------------------------------------------------
-
+        # Step 4 — Prompt
         prompt = f"""
 <s>[INST]
 You are an expert AI assistant for Indian Government welfare schemes.
@@ -183,17 +158,7 @@ Provide structured responses using bullet points when helpful.
 [/INST]
 """
 
-        # ---------------------------------------------------
-        # Step 5: LLM inference
-        # ---------------------------------------------------
-
-        if not HF_TOKEN:
-
-            return {
-                "answer": "HF_TOKEN not configured on backend.",
-                "sources": retrieved_contexts
-            }
-
+        # Step 5 — LLM Inference
         response = llm_client.chat_completion(
             messages=[
                 {"role": "user", "content": prompt}
@@ -201,32 +166,20 @@ Provide structured responses using bullet points when helpful.
             max_tokens=400,
             temperature=0.3
         )
-        
+
         response_text = response.choices[0].message.content
 
-        # ---------------------------------------------------
-        # Step 6: Return answer
-        # ---------------------------------------------------
-
+        # Step 6 — Return Result
         return {
-
-            "answer": response.strip(),
-
+            "answer": response_text.strip(),
             "sources": [
-
                 {
                     "scheme": meta_data[i]["name"],
                     "snippet": meta_data[i]["text"][:200]
                 }
-
                 for i in retrieved_ids
             ]
-
         }
 
     except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500, detail=str(e))
