@@ -7,7 +7,7 @@ import numpy as np
 import json
 import os
 
-from sentence_transformers import SentenceTransformer
+
 from huggingface_hub import InferenceClient, hf_hub_download
 
 # ---------------------------------------
@@ -39,8 +39,9 @@ if not HF_TOKEN:
 
 print("Loading embedding model...")
 
-embedding_model = SentenceTransformer(
-    "sentence-transformers/all-MiniLM-L6-v2"
+embedding_client = InferenceClient(
+    model="sentence-transformers/all-MiniLM-L6-v2",
+    token=HF_TOKEN
 )
 
 print("Embedding model loaded.")
@@ -129,7 +130,7 @@ def chat(request: ChatRequest):
         # Step 1: Create embedding
         # -----------------------------------
 
-        query_vector = embedding_model.encode([query]).astype("float32")
+        query_vector = np.array(embedding_client.feature_extraction(query),dtype="float32").reshape(1, -1)
 
         # -----------------------------------
         # Step 2: Vector search
